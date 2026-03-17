@@ -136,7 +136,7 @@ cmd_phase() {
   local current_phase
   current_phase=$(get_phase)
 
-  [[ -n "$target" ]] || die "Usage: devblock-ctl.sh phase <gather|test|run|implement|retest|review|done>"
+  [[ -n "$target" ]] || die "Usage: devblock-ctl.sh phase <gather|test|run|implement|fix-tests|retest|review|done>"
 
   case "${current_phase}::${target}" in
     gather::test)
@@ -147,10 +147,26 @@ cmd_phase() {
       ;;
     run::implement)
       info "Validating: tests must FAIL before implementing..."
-      if run_tests; then
+      # Validate test_command exists before capturing output
+      local test_cmd
+      test_cmd=$(get_test_command)
+      [[ "$test_cmd" != "null" && -n "$test_cmd" ]] || die "No test_command configured."
+      local test_output exit_code=0
+      test_output=$(run_tests 2>&1) || exit_code=$?
+      # Show test output so the agent can see what happened
+      printf '%s\n' "$test_output"
+      if [[ $exit_code -eq 0 ]]; then
         die "Tests are PASSING. In run phase, tests must FAIL before moving to implement. Write failing tests first."
       fi
+      # Warn on error-type failures (not assertion failures)
+      if printf '%s\n' "$test_output" | grep -qiE 'SyntaxError|ImportError|ModuleNotFoundError|TypeError.*not a function|ReferenceError'; then
+        echo "⚠️  WARNING: Tests seem to fail due to ERRORS, not assertion failures."
+        echo "   Consider fixing test code before implementing."
+      fi
       ok "Tests correctly failing. Moving to implement phase."
+      ;;
+    implement::fix-tests)
+      ok "Entering fix-tests (return to implement)."
       ;;
     implement::retest)
       ok "Moving to retest phase."
@@ -162,6 +178,21 @@ cmd_phase() {
       fi
       ok "Tests passing. Moving to review phase."
       ;;
+    retest::fix-tests)
+      ok "Entering fix-tests (return to retest)."
+      ;;
+    fix-tests::implement)
+      local ret
+      ret=$(jq -r '.current.return_to // empty' "$SCOPE_FILE")
+      [[ "$ret" == "implement" ]] || die "Cannot return to implement — fix-tests was entered from ${ret:-unknown}."
+      ok "Returning to implement phase."
+      ;;
+    fix-tests::retest)
+      local ret
+      ret=$(jq -r '.current.return_to // empty' "$SCOPE_FILE")
+      [[ "$ret" == "retest" ]] || die "Cannot return to retest — fix-tests was entered from ${ret:-unknown}."
+      ok "Returning to retest phase."
+      ;;
     review::done)
       ok "Feature complete!"
       ;;
@@ -169,13 +200,27 @@ cmd_phase() {
       info "Review KO. Back to gather."
       ;;
     *::gather)
+      # Auto-stash implementation work on backward transitions
+      if [[ "$current_phase" == "implement" || "$current_phase" == "fix-tests" ]]; then
+        if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
+          git stash push -m "devblock-auto: $current_phase -> $target" 2>/dev/null || true
+          info "Implementation stashed. Use 'git stash pop' to restore."
+        fi
+      fi
       info "Back to gather (user request)."
       ;;
     *::test)
+      # Auto-stash implementation work on backward transitions
+      if [[ "$current_phase" == "implement" || "$current_phase" == "fix-tests" ]]; then
+        if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
+          git stash push -m "devblock-auto: $current_phase -> $target" 2>/dev/null || true
+          info "Implementation stashed. Use 'git stash pop' to restore."
+        fi
+      fi
       info "Back to test (user request)."
       ;;
     *)
-      die "Invalid transition: $current_phase -> $target. Valid phases: gather, test, run, implement, retest, review, done."
+      die "Invalid transition: $current_phase -> $target. Valid phases: gather, test, run, implement, fix-tests, retest, review, done."
       ;;
   esac
 
@@ -189,8 +234,20 @@ cmd_phase() {
     ' "$SCOPE_FILE" > "${SCOPE_FILE}.tmp" && mv "${SCOPE_FILE}.tmp" "$SCOPE_FILE"
     ok "Feature moved to completed."
     info "Use /devblock:next to start the next feature."
+  elif [[ "$target" == "fix-tests" ]]; then
+    # Set return_to and phase
+    jq --arg p "$target" --arg ret "$current_phase" '
+      .current.phase = $p | .current.return_to = $ret
+    ' "$SCOPE_FILE" > "${SCOPE_FILE}.tmp" && mv "${SCOPE_FILE}.tmp" "$SCOPE_FILE"
   else
-    jq --arg p "$target" '.current.phase = $p' "$SCOPE_FILE" > "${SCOPE_FILE}.tmp" && mv "${SCOPE_FILE}.tmp" "$SCOPE_FILE"
+    # Clear return_to when leaving fix-tests, set phase
+    if [[ "$current_phase" == "fix-tests" ]]; then
+      jq --arg p "$target" '
+        .current.phase = $p | del(.current.return_to)
+      ' "$SCOPE_FILE" > "${SCOPE_FILE}.tmp" && mv "${SCOPE_FILE}.tmp" "$SCOPE_FILE"
+    else
+      jq --arg p "$target" '.current.phase = $p' "$SCOPE_FILE" > "${SCOPE_FILE}.tmp" && mv "${SCOPE_FILE}.tmp" "$SCOPE_FILE"
+    fi
   fi
 }
 

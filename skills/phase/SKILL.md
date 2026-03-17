@@ -1,6 +1,6 @@
 ---
 name: phase
-description: "Transition DevBlock phase (gather→test→run→implement→retest→review→done) with validation"
+description: "Transition DevBlock phase (gather→test→run→implement→fix-tests→retest→review→done) with validation"
 user_invocable: true
 ---
 
@@ -19,10 +19,11 @@ Questa skill accetta un argomento: la fase target.
 - `/devblock:phase run` — da test a run
 - `/devblock:phase implement` — da run a implement
 - `/devblock:phase retest` — da implement a retest
+- `/devblock:phase fix-tests` — da implement o retest a fix-tests (correggi test senza perdere impl)
 - `/devblock:phase review` — da retest a review
 - `/devblock:phase done` — da review a done
-- `/devblock:phase gather` — backward a gather (da qualsiasi fase)
-- `/devblock:phase test` — backward a test (da qualsiasi fase)
+- `/devblock:phase gather` — backward a gather (da qualsiasi fase, auto-stash da implement/fix-tests)
+- `/devblock:phase test` — backward a test (da qualsiasi fase, auto-stash da implement/fix-tests)
 
 ## Flusso
 
@@ -40,13 +41,17 @@ Leggi `.scope.json` e mostra:
 |--------|------------|-------------|
 | gather → test | Contesto analizzato, si scrivono i test | — |
 | test → run | Test scritti, si eseguono | — |
-| run → implement | Test falliscono, si implementa | Test DEVONO FALLIRE |
+| run → implement | Test falliscono, si implementa | Test DEVONO FALLIRE + warning errori |
 | implement → retest | Implementazione fatta, si rieseguono i test | — |
+| implement → fix-tests | Test hanno bug, correggi senza perdere impl | Salva return_to=implement |
+| retest → fix-tests | Test hanno bug dopo retest, correggi | Salva return_to=retest |
+| fix-tests → implement | Test corretti, torna a implementare | Solo se return_to=implement |
+| fix-tests → retest | Test corretti, riesegui | Solo se return_to=retest |
 | retest → review | Test passano, si revisiona | Test DEVONO PASSARE |
 | review → done | Review OK, feature completa | — |
 | review → gather | Review KO, ricomincia | — |
-| * → gather | Backward esplicito | Conferma utente |
-| * → test | Backward esplicito | Conferma utente |
+| * → gather | Backward esplicito | Conferma utente, auto-stash |
+| * → test | Backward esplicito | Conferma utente, auto-stash |
 
 ### 3. Conferma
 

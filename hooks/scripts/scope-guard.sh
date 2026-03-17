@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # scope-guard.sh — PreToolUse hook for DevBlock
-# Enforces scope locking and 7-phase TDD constraints.
+# Enforces scope locking and 8-phase TDD constraints.
 # Reads tool input from stdin (JSON), outputs JSON response.
 set -o pipefail
 trap 'echo "scope-guard.sh: error at line $LINENO (exit=$?)" >&2' ERR
@@ -86,14 +86,14 @@ if [[ "$TOOL_NAME" == "Edit" || "$TOOL_NAME" == "Write" || "$TOOL_NAME" == "Mult
     deny "🚫 File '$FILE_PATH' is outside the current scope. Declared files: $SCOPE_LIST. Use /devblock:scope-add to add it."
   fi
 
-  # Rule 4: Phase-based file locking (7 phases)
+  # Rule 4: Phase-based file locking (8 phases)
   case "$PHASE" in
     gather|run|retest|review|done)
       deny "🚫 No file editing in $PHASE phase. Files are read-only."
       ;;
-    test)
+    test|fix-tests)
       if [[ "$IN_TESTS" -eq 0 ]]; then
-        deny "🚫 Only test files are editable in test phase. '$FILE_PATH' is an implementation file."
+        deny "🚫 Only test files are editable in $PHASE phase. '$FILE_PATH' is an implementation file."
       fi
       ;;
     implement)

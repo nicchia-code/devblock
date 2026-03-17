@@ -10,6 +10,7 @@ DevBlock **automatically enforces** scope and TDD phase constraints via `scope-g
 | test | Solo test | — |
 | run | Nessuno | Test devono FALLIRE |
 | implement | Solo impl | — |
+| **fix-tests** | **Solo test** | **Correggere test da implement/retest** |
 | retest | Nessuno | Test devono PASSARE |
 | review | Nessuno | — |
 | done | Nessuno | — |
@@ -39,13 +40,17 @@ Questo vale per OGNI transizione, sia in avanti che indietro.
 ```
 gather → test        (nessuna validazione)
 test → run           (nessuna validazione)
-run → implement      (test DEVONO FALLIRE)
+run → implement      (test DEVONO FALLIRE + warning se errori non-assertion)
 implement → retest   (nessuna validazione)
+implement → fix-tests (salva return_to=implement)
+retest → fix-tests   (salva return_to=retest)
+fix-tests → implement (solo se return_to=implement)
+fix-tests → retest   (solo se return_to=retest)
 retest → review      (test DEVONO PASSARE)
 review → done        (nessuna validazione, utente conferma)
 review → gather      (review KO, ricomincia)
-*qualsiasi* → gather (backward, utente conferma)
-*qualsiasi* → test   (backward, utente conferma)
+*qualsiasi* → gather (backward, utente conferma, auto-stash da implement/fix-tests)
+*qualsiasi* → test   (backward, utente conferma, auto-stash da implement/fix-tests)
 ```
 
 ## Loop Autonomo
@@ -82,6 +87,30 @@ Se fai un errore durante una fase TDD:
 1. Rollbacka i file con `git checkout -- <file>`
 2. Informa l'utente cosa e' successo
 3. Riprendi dalla fase corretta — mai avanzare fase per coprire un errore
+
+## Fase fix-tests
+
+La fase `fix-tests` e' una sotto-fase che sblocca i file di test **senza perdere il lavoro di implementazione**. Si usa quando durante `implement` o `retest` si scopre che i test hanno bug o assumono un'API shape sbagliata.
+
+- Raggiungibile solo da `implement` e `retest`
+- Permette di editare solo file test (come la fase `test`)
+- Il campo `current.return_to` in `.scope.json` traccia la fase di provenienza
+- Si puo' tornare solo alla fase da cui si e' entrati
+
+## Regole fase test
+
+Durante la fase `test`, i file di test devono contenere SOLO:
+- Test cases e asserzioni
+- Fixture e setup minimali
+- Import necessari
+
+**Vietato** scrivere nei file di test:
+- Logica di business o utility che implementino la feature
+- Codice che farebbe passare i test senza implementazione reale
+
+## Auto-stash
+
+Quando si esegue una backward transition (`*→gather`, `*→test`) dalla fase `implement` o `fix-tests`, il controller esegue automaticamente `git stash push`. L'utente puo' fare `git stash pop` dopo aver corretto i test.
 
 ## /devblock:unfocus MAI autonomo
 

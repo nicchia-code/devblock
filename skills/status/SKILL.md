@@ -58,6 +58,7 @@ Formatta l'output in una dashboard con tabelle:
 | test | 🔴 | 🔒 locked | ✏️ writable |
 | run | 🏃 | 🔒 locked | 🔒 locked |
 | implement | 🟢 | ✏️ writable | 🔒 locked |
+| fix-tests | 🔧 | 🔒 locked | ✏️ writable |
 | retest | 🏃 | 🔒 locked | 🔒 locked |
 | review | 🔵 | 🔒 locked | 🔒 locked |
 | done | ✅ | 🔒 locked | 🔒 locked |

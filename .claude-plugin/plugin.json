@@ -1,5 +1,5 @@
 {
   "name": "devblock",
-  "version": "1.0.0",
-  "description": "Scope locking and TDD enforcement for Claude Code. Prevents AI from modifying files outside declared scope and enforces 7-phase (gather/test/run/implement/retest/review/done) workflow."
+  "version": "1.1.0",
+  "description": "Scope locking and TDD enforcement for Claude Code. Prevents AI from modifying files outside declared scope and enforces 8-phase (gather/test/run/implement/fix-tests/retest/review/done) workflow."
 }
