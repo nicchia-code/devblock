@@ -150,6 +150,81 @@ Durante la fase `test`, i file di test devono contenere SOLO:
 - Logica di business o utility che implementino la feature
 - Codice che farebbe passare i test senza implementazione reale
 
+## Tattiche comuni
+
+Queste tattiche sono **workaround da usare solo quando il flusso TDD si blocca** a causa dei vincoli del framework DevBlock (transizioni che richiedono test che passino/falliscano, file fuori scope, test con bug durante implement). Non sono pattern da applicare di default — usa l'approccio diretto quando possibile.
+
+### 1. Test vuoto/passante (fase retest)
+
+Se il test command deve passare ma non hai test reali pronti (es. file di test con solo un import), aggiungi un test segnaposto che passa:
+
+```js
+test('placeholder', () => { expect(true).toBe(true) })
+```
+```python
+def test_placeholder():
+    assert True
+```
+
+Usalo per sbloccare la transizione `retest → review` quando i test reali sono gia' tutti verdi e il runner ha bisogno di almeno un test.
+
+### 2. Test che importa modulo inesistente (fase run)
+
+Nella fase `run`, il test **deve fallire**. Un errore di import (`ImportError`, `ModuleNotFoundError`, `Cannot find module`) e' un fallimento valido per la validazione `run → implement`. Scrivi il test nella fase `test`, poi in `run` il controller accetta l'errore di import come fallimento corretto.
+
+```python
+from myapp.new_module import new_function  # ModuleNotFoundError = OK
+```
+```js
+const { newFunction } = require('./new_module')  // Cannot find module = OK
+```
+
+### 3. `test.todo()` / `it.todo()` (fase test)
+
+Per pianificare test senza implementarli subito:
+
+```js
+it.todo('should validate email format')
+it.todo('should reject empty input')
+```
+```python
+@pytest.mark.skip(reason="TODO")
+def test_validate_email(): ...
+```
+
+Utile per documentare l'intenzione durante `test` e implementare i test uno alla volta.
+
+### 4. Scope-add al volo (fase implement)
+
+Se durante `implement` scopri che serve modificare un file non in scope, **non provare a editarlo** — l'hook lo blocchera'. Usa `/devblock:scope-add` per aggiungerlo:
+
+> "Serve modificare `src/utils.ts` che non e' in scope. Uso `/devblock:scope-add` per aggiungerlo."
+
+### 5. fix-tests vs backward (fase implement/retest)
+
+Quando i test hanno un bug durante `implement` o `retest`:
+
+| Situazione | Azione | Comando |
+|------------|--------|---------|
+| Test ha un typo/bug, impl e' corretta | `fix-tests` (mantiene impl) | `/devblock:phase fix-tests` |
+| Test assume API shape sbagliata, serve riscrittura | backward a `test` (stash impl) | `/devblock:phase test` |
+
+**Regola pratica:** se la fix e' < 5 righe, usa `fix-tests`. Se serve ripensare i test, torna a `test`.
+
+### 6. Minimal failing assertion (fase run)
+
+Per avere un test che fallisce in modo pulito senza dipendenze esterne:
+
+```js
+test('not yet implemented', () => { expect(true).toBe(false) })
+```
+```python
+def test_not_yet_implemented():
+    assert False, "not yet implemented"
+```
+
+Produce un errore di asserzione chiaro, ideale per la validazione `run → implement` quando il modulo esiste gia' ma la funzione no.
+
 ## Auto-stash
 
 Quando si esegue una backward transition (`*→gather`, `*→test`) dalla fase `implement` o `fix-tests`, il controller esegue automaticamente `git stash push`. L'utente puo' fare `git stash pop` dopo aver corretto i test.
