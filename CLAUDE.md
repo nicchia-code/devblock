@@ -73,6 +73,48 @@ Quando il hook PostToolUse su ExitPlanMode inietta il messaggio, Claude:
 - Mostra TABELLA: Feature | File Impl | File Test | Test Command
 - Utente accetta o modifica → `devblock-ctl.sh init`
 
+### Formato JSON per `devblock-ctl.sh init`
+
+**Singola feature:**
+```json
+{
+  "current": {
+    "name": "Feature name",
+    "phase": "gather",
+    "files": ["src/module.ts"],
+    "tests": ["tests/module.test.ts"],
+    "test_command": "npm test -- tests/module.test.ts"
+  }
+}
+```
+
+**Con queue (feature multiple):**
+```json
+{
+  "current": {
+    "name": "First feature",
+    "phase": "gather",
+    "files": ["src/auth.ts"],
+    "tests": ["tests/auth.test.ts"],
+    "test_command": "npm test -- tests/auth.test.ts"
+  },
+  "queue": [
+    {
+      "name": "Second feature",
+      "files": ["src/api.ts"],
+      "tests": ["tests/api.test.ts"],
+      "test_command": "npm test -- tests/api.test.ts"
+    }
+  ]
+}
+```
+
+**Campi obbligatori in `current`:** `name`, `phase`, `files`, `tests`, `test_command`.
+
+**Valori accettati per `phase`:** `gather`, `test`, `run`, `implement`, `retest`, `review`, `done`. All'init usare sempre `gather`.
+
+**Campi auto-aggiunti dal controller** (non servono nel JSON di input): `session`, `started_at`, `queue` (default `[]`), `completed` (default `[]`), `config` (default `{}`).
+
 ## Tornare indietro
 
 L'agent puo' proporre di tornare a qualsiasi fase precedente, ma **DEVE** chiedere conferma e spiegare il motivo.
