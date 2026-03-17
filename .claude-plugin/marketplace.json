@@ -1,0 +1,25 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "devblock",
+  "metadata": {
+    "description": "Scope locking and TDD enforcement for Claude Code."
+  },
+  "owner": {
+    "name": "Luca",
+    "email": "luca.soda@gmail.com"
+  },
+  "plugins": [
+    {
+      "name": "devblock",
+      "description": "Scope locking and TDD enforcement. Prevents AI from modifying files outside declared scope and enforces 7-phase workflow.",
+      "version": "1.0.0",
+      "author": {
+        "name": "Luca",
+        "email": "luca.soda@gmail.com"
+      },
+      "source": "./",
+      "category": "development",
+      "tags": ["tdd", "scope-locking", "enforcement"]
+    }
+  ]
+}

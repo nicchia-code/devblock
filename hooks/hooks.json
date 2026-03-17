@@ -1,0 +1,35 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "test -f .devblock/scope-guard.sh && bash .devblock/scope-guard.sh || true"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "test -f .devblock/scope-guard.sh && bash .devblock/scope-guard.sh || true"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "ExitPlanMode",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "test -f .devblock/plan-trigger.sh && bash .devblock/plan-trigger.sh || true"
+          }
+        ]
+      }
+    ]
+  }
+}
