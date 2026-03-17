@@ -75,6 +75,77 @@ cmd_install() {
     printf '%s\n' '.devblock/' '.scope.json' > .gitignore
   fi
 
+  # Append DevBlock usage instructions to CLAUDE.md
+  local marker="# DevBlock — Usage"
+  if ! grep -qF "$marker" CLAUDE.md 2>/dev/null; then
+    cat >> CLAUDE.md <<'CLAUDEMD'
+
+# DevBlock — Usage
+
+## devblock-ctl.sh commands
+
+| Command | Usage | Description |
+|---------|-------|-------------|
+| `install` | `bash .devblock/devblock-ctl.sh install` | Copy scripts to `.devblock/` |
+| `init` | `bash .devblock/devblock-ctl.sh init '<JSON>'` | Start a new session |
+| `status` | `bash .devblock/devblock-ctl.sh status` | Show current session |
+| `phase` | `bash .devblock/devblock-ctl.sh phase <phase>` | Transition phase |
+| `next` | `bash .devblock/devblock-ctl.sh next` | Advance to next feature in queue |
+| `scope-add` | `bash .devblock/devblock-ctl.sh scope-add <file> [--test]` | Add file to scope |
+| `unfocus` | `bash .devblock/devblock-ctl.sh unfocus [--full]` | Close session |
+
+## JSON format for `init`
+
+**Single feature:**
+```json
+{
+  "current": {
+    "name": "Feature name",
+    "phase": "gather",
+    "files": ["src/module.ts"],
+    "tests": ["tests/module.test.ts"],
+    "test_command": "npm test -- tests/module.test.ts"
+  }
+}
+```
+
+**With queue (multiple features):**
+```json
+{
+  "current": {
+    "name": "First feature",
+    "phase": "gather",
+    "files": ["src/auth.ts"],
+    "tests": ["tests/auth.test.ts"],
+    "test_command": "npm test -- tests/auth.test.ts"
+  },
+  "queue": [
+    {
+      "name": "Second feature",
+      "files": ["src/api.ts"],
+      "tests": ["tests/api.test.ts"],
+      "test_command": "npm test -- tests/api.test.ts"
+    }
+  ]
+}
+```
+
+**Required fields in `current`:** `name`, `phase`, `files`, `tests`, `test_command`.
+
+**Accepted `phase` values:** `gather`, `test`, `run`, `implement`, `retest`, `review`, `done`. Always use `gather` at init.
+
+**Auto-added by controller:** `session`, `started_at`, `queue` (default `[]`), `completed` (default `[]`), `config` (default `{}`).
+
+**Invocation:** pass the JSON as a single quoted string argument:
+```bash
+bash .devblock/devblock-ctl.sh init '{"current":{"name":"My feature","phase":"gather","files":["src/foo.ts"],"tests":["tests/foo.test.ts"],"test_command":"npm test -- tests/foo.test.ts"}}'
+```
+CLAUDEMD
+    ok "DevBlock usage instructions appended to CLAUDE.md"
+  else
+    info "DevBlock usage instructions already present in CLAUDE.md"
+  fi
+
   ok "DevBlock installed to .devblock/"
   info "scope-guard.sh, plan-trigger.sh and devblock-ctl.sh copied from $plugin_dir"
 }
