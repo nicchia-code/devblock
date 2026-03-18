@@ -1,21 +1,17 @@
 #!/usr/bin/env bash
-# scope-guard.sh — PreToolUse hook for DevBlock
-# Enforces scope locking and 8-phase TDD constraints.
-# Reads tool input from stdin (JSON), outputs JSON response.
+# scope-guard.sh — PreToolUse hook for DevBlock v3
+# Enforces scope locking and RED/GREEN phase constraints.
 set -o pipefail
-trap 'echo "scope-guard.sh: error at line $LINENO (exit=$?)" >&2' ERR
 
 SCOPE_FILE=".scope.json"
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
-allow() {
-  exit 0
-}
+allow() { exit 0; }
 
 deny() {
   local reason="$1"
-  reason=$(printf '%s' "$reason" | sed 's/\\/\\\\/g; s/"/\\"/g' | tr '\n' ' ')
+  reason=$(printf '%s' "$reason" | sed 's/"/\\"/g' | tr '\n' ' ')
   cat <<EOJSON
 {"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"$reason"}}
 EOJSON
@@ -27,110 +23,95 @@ EOJSON
 INPUT=$(cat)
 TOOL_NAME=$(printf '%s' "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null || true)
 
-# ─── Rule 0: No .scope.json → no session, allow everything ──────────────────
+# ─── No session → allow everything ───────────────────────────────────────────
 
-if [[ ! -f "$SCOPE_FILE" ]]; then
-  allow
-fi
+[[ -f "$SCOPE_FILE" ]] || allow
+command -v jq &>/dev/null || allow
 
-# ─── Check jq availability ──────────────────────────────────────────────────
-
-if ! command -v jq &>/dev/null; then
-  echo "⚠️  WARNING: jq not found. DevBlock scope guard disabled." >&2
-  allow
-fi
-
-# ─── Load session state ─────────────────────────────────────────────────────
+# ─── Load state ──────────────────────────────────────────────────────────────
 
 CURRENT=$(jq -r '.current // empty' "$SCOPE_FILE" 2>/dev/null || true)
 PHASE=$(jq -r '.current.phase // empty' "$SCOPE_FILE" 2>/dev/null || true)
 
-# ─── Pre-extract tool_input fields ──────────────────────────────────────────
-
 FILE_PATH=$(printf '%s' "$INPUT" | jq -r '.tool_input.file_path // empty' 2>/dev/null || true)
 COMMAND=$(printf '%s' "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null || true)
 
-# ─── Handle Edit/Write/MultiEdit ─────────────────────────────────────────────
+# ─── Edit/Write/MultiEdit ───────────────────────────────────────────────────
 
 if [[ "$TOOL_NAME" == "Edit" || "$TOOL_NAME" == "Write" || "$TOOL_NAME" == "MultiEdit" ]]; then
 
-  # Normalize: strip project dir prefix if present
+  # Normalize path
   if [[ -n "${CLAUDE_PROJECT_DIR:-}" ]]; then
     FILE_PATH="${FILE_PATH#$CLAUDE_PROJECT_DIR/}"
   fi
-  # Also strip leading ./
   FILE_PATH="${FILE_PATH#./}"
 
-  # Rule 1: .scope.json is ALWAYS blocked for Edit/Write
+  # Block .scope.json edits
   if [[ "$FILE_PATH" == ".scope.json" || "$FILE_PATH" == *"/.scope.json" ]]; then
-    deny "🚫 .scope.json cannot be edited directly. State changes go through devblock-ctl.sh (use /devblock:phase, /devblock:next, etc.)"
+    deny "BLOCKED: Do not edit .scope.json. To advance phase, call /devblock:next. To add files, call /devblock:add <file>."
   fi
 
-  # Rule 1b: Files outside the project directory are not our concern
-  if [[ "$FILE_PATH" == /* ]]; then
-    allow
-  fi
+  # Files outside project are not our concern
+  [[ "$FILE_PATH" != /* ]] || allow
 
-  # Rule 2: No current feature active
+  # No active feature
   if [[ -z "$CURRENT" || "$CURRENT" == "null" ]]; then
-    deny "🚫 No active feature. Start from a plan or use /devblock:next."
+    deny "BLOCKED: No active feature. Call /devblock:start to begin."
   fi
 
-  # Check if file is in scope
+  # Check scope membership
   IN_FILES=$(jq --arg f "$FILE_PATH" '.current.files // [] | map(select(. == $f)) | length' "$SCOPE_FILE" 2>/dev/null || echo "0")
   IN_TESTS=$(jq --arg f "$FILE_PATH" '.current.tests // [] | map(select(. == $f)) | length' "$SCOPE_FILE" 2>/dev/null || echo "0")
 
-  # Rule 3: File not in scope at all
+  # File not in scope
   if [[ "$IN_FILES" -eq 0 && "$IN_TESTS" -eq 0 ]]; then
-    SCOPE_LIST=$(jq -r '[(.current.files // [])[], (.current.tests // [])[]] | join(", ")' "$SCOPE_FILE" 2>/dev/null || echo "(unable to read)")
-    deny "🚫 File '$FILE_PATH' is outside the current scope. Declared files: $SCOPE_LIST. Use /devblock:scope-add to add it."
+    SCOPE_LIST=$(jq -r '[(.current.files // [])[], (.current.tests // [])[]] | join(", ")' "$SCOPE_FILE" 2>/dev/null || echo "(unknown)")
+    deny "BLOCKED: '$FILE_PATH' not in scope. Files: $SCOPE_LIST. Call /devblock:add $FILE_PATH."
   fi
 
-  # Rule 4: Phase-based file locking (8 phases)
-  case "$PHASE" in
-    gather|run|retest|review|done)
-      deny "🚫 No file editing in $PHASE phase. Files are read-only."
-      ;;
-    test|fix-tests)
-      if [[ "$IN_TESTS" -eq 0 ]]; then
-        deny "🚫 Only test files are editable in $PHASE phase. '$FILE_PATH' is an implementation file."
-      fi
-      ;;
-    implement)
-      if [[ "$IN_FILES" -eq 0 ]]; then
-        deny "🚫 Only implementation files are editable in implement phase. '$FILE_PATH' is a test file."
-      fi
-      ;;
-    *)
-      deny "🚫 Unknown phase '$PHASE'. Cannot determine file permissions."
-      ;;
-  esac
+  # RED phase: only test files editable
+  if [[ "$IN_FILES" -gt 0 && "$IN_TESTS" -eq 0 && "$PHASE" == "red" ]]; then
+    deny "BLOCKED: RED phase — only test files editable. Write failing tests, then /devblock:next."
+  fi
 
-  # All checks passed
+  # GREEN phase: only impl files editable
+  if [[ "$IN_TESTS" -gt 0 && "$PHASE" == "green" ]]; then
+    deny "BLOCKED: GREEN phase — only impl files editable. Make tests pass, then /devblock:next. If tests are wrong, run: bash .devblock/devblock-ctl.sh back"
+  fi
+
   allow
 fi
 
-# ─── Handle Bash ─────────────────────────────────────────────────────────────
+# ─── Bash ────────────────────────────────────────────────────────────────────
 
 if [[ "$TOOL_NAME" == "Bash" ]]; then
-  # devblock-ctl.sh always allowed
-  if printf '%s' "$COMMAND" | grep -qE 'devblock-ctl\.sh[[:space:]]'; then
+
+  # Whitelist devblock-ctl.sh calls
+  if printf '%s' "$COMMAND" | grep -qE 'devblock-ctl\.sh'; then
     allow
   fi
 
-  # If no active session, allow all bash commands
+  # No active feature → allow all bash
   if [[ -z "$CURRENT" || "$CURRENT" == "null" ]]; then
     allow
   fi
 
-  # Block only patterns that write files
-  # Pure ERE — no \b or \s (GNU extensions), portable across GNU/BSD grep
-  if printf '%s' "$COMMAND" | grep -qE '[^2&]>[[:space:]]*[^&/[:space:]]|[^0-9]>>[[:space:]]|sed[[:space:]]+-i|tee[[:space:]]+[^-]|(^|[[:space:];|&])rm[[:space:]]|(^|[[:space:];|&])mv[[:space:]]|(^|[[:space:];|&])cp[[:space:]]'; then
-    # Allow test runners
-    if printf '%s' "$COMMAND" | grep -qE '^[[:space:]]*(npm[[:space:]]+test|npx|yarn[[:space:]]+test|pnpm[[:space:]]+test|pytest|python[[:space:]]+-m[[:space:]]+pytest|cargo[[:space:]]+test|go[[:space:]]+test|make[[:space:]]+test|bundle[[:space:]]+exec[[:space:]]+rspec|jest|vitest|mocha|bun[[:space:]]+test)'; then
+  # Whitelist readonly commands
+  if printf '%s' "$COMMAND" | grep -qE '^\s*(ls|cat|echo|find|which|file|stat|du|df|wc|head|tail|pwd|date|env)\s'; then
+    allow
+  fi
+
+  # Block file-modifying patterns
+  if printf '%s' "$COMMAND" | grep -qE '([^2]>\s*[^&/]|[^0-9]>>\s*[^/]|sed\s+-i|tee\s+|rm\s+|mv\s+|cp\s+)'; then
+    # Whitelist test runners and git
+    if printf '%s' "$COMMAND" | grep -qE '^\s*(git\s+|npm\s+test|npx\s+|yarn\s+test|pnpm\s+test|pytest|python\s+-m\s+pytest|cargo\s+test|go\s+test|make\s+test|bundle\s+exec\s+rspec|jest|vitest|mocha|bun\s+test)'; then
       allow
     fi
-    deny "🚫 File-modifying Bash commands are blocked during a DevBlock session. Use Edit/Write tools instead (they are scope-checked). Command: $(echo "$COMMAND" | head -c 100)"
+    # Whitelist piping to read-only commands
+    if printf '%s' "$COMMAND" | grep -qE '\|\s*(grep|head|tail|less|wc|sort|cat|jq|awk|sed\s+[^-])' && ! printf '%s' "$COMMAND" | grep -qE '([^2]>\s*[^&/]|[^0-9]>>\s*[^/])'; then
+      allow
+    fi
+    deny "BLOCKED: Do not modify files via Bash. Use the Edit or Write tool instead — they are scope-checked."
   fi
 
   allow

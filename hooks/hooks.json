@@ -19,17 +19,6 @@
           }
         ]
       }
-    ],
-    "PostToolUse": [
-      {
-        "matcher": "ExitPlanMode",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "test -f .devblock/plan-trigger.sh && bash .devblock/plan-trigger.sh || true"
-          }
-        ]
-      }
     ]
   }
 }

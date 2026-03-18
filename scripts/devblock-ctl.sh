@@ -1,29 +1,29 @@
 #!/usr/bin/env bash
-# devblock-ctl.sh — UNICO writer di .scope.json
-# Claude lo invoca via Bash, ma questo script valida indipendentemente.
+# devblock-ctl.sh — Single writer of .scope.json
+# Commands: install, init, status, next, back, scope-add, stop
 set -euo pipefail
 
 SCOPE_FILE=".scope.json"
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
-die() { echo "❌ ERROR: $*" >&2; exit 1; }
-info() { echo "ℹ️  $*"; }
-ok() { echo "✅ $*"; }
+die() { echo "ERROR: $*" >&2; exit 1; }
+info() { echo "$*"; }
+ok() { echo "$*"; }
 
 require_jq() {
-  command -v jq &>/dev/null || die "jq is required but not installed."
+  command -v jq &>/dev/null || die "jq is not installed. Install it with: sudo apt install jq (or brew install jq)."
 }
 
 require_scope() {
-  [[ -f "$SCOPE_FILE" ]] || die "No active session. Run /devblock:install and start from a plan."
+  [[ -f "$SCOPE_FILE" ]] || die "No active session. Call /devblock:start to begin."
 }
 
 require_current() {
   require_scope
   local current
   current=$(jq -r '.current' "$SCOPE_FILE")
-  [[ "$current" != "null" && -n "$current" ]] || die "No active feature. Use /devblock:next or start from a plan."
+  [[ "$current" != "null" && -n "$current" ]] || die "No active feature. Call /devblock:start to begin."
 }
 
 get_phase() {
@@ -37,11 +37,33 @@ get_test_command() {
 run_tests() {
   local test_cmd
   test_cmd=$(get_test_command)
-  [[ "$test_cmd" != "null" && -n "$test_cmd" ]] || die "No test_command configured."
+  [[ "$test_cmd" != "null" && -n "$test_cmd" ]] || die "No test_command configured. Call /devblock:stop, then /devblock:start and provide a test command."
   info "Running tests: $test_cmd"
   local exit_code=0
   ( eval "$test_cmd" ) 2>&1 || exit_code=$?
   return $exit_code
+}
+
+auto_commit() {
+  local feature_name="$1"
+  # Stage only scoped files (impl + tests)
+  local files
+  files=$(jq -r '[(.current.files // [])[], (.current.tests // [])[]] | .[]' "$SCOPE_FILE" 2>/dev/null)
+  if [[ -z "$files" ]]; then
+    info "No files to commit."
+    return 0
+  fi
+  local staged=0
+  while IFS= read -r f; do
+    if [[ -f "$f" ]] && git diff --name-only -- "$f" 2>/dev/null | grep -q . || git ls-files --others --exclude-standard -- "$f" 2>/dev/null | grep -q .; then
+      git add "$f" 2>/dev/null && ((staged++)) || true
+    fi
+  done <<< "$files"
+  if [[ "$staged" -gt 0 ]]; then
+    git commit -m "feat: $feature_name" 2>/dev/null && ok "Auto-committed: $feature_name" || info "Nothing to commit."
+  else
+    info "No changes to commit."
+  fi
 }
 
 # ─── Commands ────────────────────────────────────────────────────────────────
@@ -54,110 +76,32 @@ cmd_install() {
   plugin_dir="$(cd "$script_dir/.." && pwd)"
 
   local src_guard="$plugin_dir/hooks/scripts/scope-guard.sh"
-  local src_trigger="$plugin_dir/hooks/scripts/plan-trigger.sh"
   local src_ctl="$plugin_dir/scripts/devblock-ctl.sh"
 
   [[ -f "$src_guard" ]] || die "Cannot find scope-guard.sh at $src_guard"
-  [[ -f "$src_trigger" ]] || die "Cannot find plan-trigger.sh at $src_trigger"
   [[ -f "$src_ctl" ]] || die "Cannot find devblock-ctl.sh at $src_ctl"
 
   mkdir -p .devblock
   cp "$src_guard" .devblock/scope-guard.sh
-  cp "$src_trigger" .devblock/plan-trigger.sh
   cp "$src_ctl" .devblock/devblock-ctl.sh
-  chmod +x .devblock/scope-guard.sh .devblock/plan-trigger.sh .devblock/devblock-ctl.sh
+  chmod +x .devblock/scope-guard.sh .devblock/devblock-ctl.sh
 
-  # Add .devblock/ to .gitignore if not already there
   if [[ -f .gitignore ]]; then
-    grep -qx '\.devblock/' .gitignore 2>/dev/null || echo '.devblock/' >> .gitignore
-    grep -qx '\.scope\.json' .gitignore 2>/dev/null || echo '.scope.json' >> .gitignore
+    grep -q '\.devblock' .gitignore 2>/dev/null || echo '.devblock/' >> .gitignore
+    grep -q '\.scope\.json' .gitignore 2>/dev/null || echo '.scope.json' >> .gitignore
   else
-    printf '%s\n' '.devblock/' '.scope.json' > .gitignore
-  fi
-
-  # Append DevBlock usage instructions to CLAUDE.md
-  local marker="# DevBlock — Usage"
-  if ! grep -qF "$marker" CLAUDE.md 2>/dev/null; then
-    cat >> CLAUDE.md <<'CLAUDEMD'
-
-# DevBlock — Usage
-
-## devblock-ctl.sh commands
-
-| Command | Usage | Description |
-|---------|-------|-------------|
-| `install` | `bash .devblock/devblock-ctl.sh install` | Copy scripts to `.devblock/` |
-| `init` | `bash .devblock/devblock-ctl.sh init '<JSON>'` | Start a new session |
-| `status` | `bash .devblock/devblock-ctl.sh status` | Show current session |
-| `phase` | `bash .devblock/devblock-ctl.sh phase <phase>` | Transition phase |
-| `next` | `bash .devblock/devblock-ctl.sh next` | Advance to next feature in queue |
-| `scope-add` | `bash .devblock/devblock-ctl.sh scope-add <file> [--test]` | Add file to scope |
-| `unfocus` | `bash .devblock/devblock-ctl.sh unfocus [--full]` | Close session |
-
-## JSON format for `init`
-
-**Single feature:**
-```json
-{
-  "current": {
-    "name": "Feature name",
-    "phase": "gather",
-    "files": ["src/module.ts"],
-    "tests": ["tests/module.test.ts"],
-    "test_command": "npm test -- tests/module.test.ts"
-  }
-}
-```
-
-**With queue (multiple features):**
-```json
-{
-  "current": {
-    "name": "First feature",
-    "phase": "gather",
-    "files": ["src/auth.ts"],
-    "tests": ["tests/auth.test.ts"],
-    "test_command": "npm test -- tests/auth.test.ts"
-  },
-  "queue": [
-    {
-      "name": "Second feature",
-      "files": ["src/api.ts"],
-      "tests": ["tests/api.test.ts"],
-      "test_command": "npm test -- tests/api.test.ts"
-    }
-  ]
-}
-```
-
-**Required fields in `current`:** `name`, `phase`, `files`, `tests`, `test_command`.
-
-**Accepted `phase` values:** `gather`, `test`, `run`, `implement`, `retest`, `review`, `done`. Always use `gather` at init.
-
-**Auto-added by controller:** `session`, `started_at`, `queue` (default `[]`), `completed` (default `[]`), `config` (default `{}`).
-
-**Invocation:** pass the JSON as a single quoted string argument:
-```bash
-bash .devblock/devblock-ctl.sh init '{"current":{"name":"My feature","phase":"gather","files":["src/foo.ts"],"tests":["tests/foo.test.ts"],"test_command":"npm test -- tests/foo.test.ts"}}'
-```
-CLAUDEMD
-    ok "DevBlock usage instructions appended to CLAUDE.md"
-  else
-    info "DevBlock usage instructions already present in CLAUDE.md"
+    printf '.devblock/\n.scope.json\n' > .gitignore
   fi
 
   ok "DevBlock installed to .devblock/"
-  info "scope-guard.sh, plan-trigger.sh and devblock-ctl.sh copied from $plugin_dir"
 }
 
 cmd_init() {
   local json="$1"
   require_jq
 
-  # Validate JSON structure
-  echo "$json" | jq empty 2>/dev/null || die "Invalid JSON provided."
+  echo "$json" | jq empty 2>/dev/null || die "Invalid JSON. Fix the JSON syntax and call /devblock:start again."
 
-  # Validate required fields
   local name phase files tests test_command
   name=$(echo "$json" | jq -r '.current.name // empty')
   phase=$(echo "$json" | jq -r '.current.phase // empty')
@@ -165,29 +109,23 @@ cmd_init() {
   tests=$(echo "$json" | jq -r '.current.tests // empty')
   test_command=$(echo "$json" | jq -r '.current.test_command // empty')
 
-  [[ -n "$name" ]] || die "current.name is required."
-  [[ -n "$phase" ]] || die "current.phase is required."
-  case "$phase" in
-    gather|test|run|implement|retest|review|done) ;;
-    *) die "Invalid phase '$phase'. Must be one of: gather, test, run, implement, retest, review, done." ;;
-  esac
-  [[ -n "$files" ]] || die "current.files is required."
-  [[ -n "$tests" ]] || die "current.tests is required."
-  [[ -n "$test_command" ]] || die "current.test_command is required."
+  [[ -n "$name" ]] || die "Missing current.name. Call /devblock:start and provide a feature name."
+  [[ -n "$phase" ]] || die "Missing current.phase. Set phase to 'red' in the JSON."
+  [[ -n "$files" ]] || die "Missing current.files. Call /devblock:start and provide implementation file paths."
+  [[ -n "$tests" ]] || die "Missing current.tests. Call /devblock:start and provide test file paths."
+  [[ -n "$test_command" ]] || die "Missing current.test_command. Call /devblock:start and provide a test command."
 
-  # Add session timestamp and started_at if not present
   local enriched
   enriched=$(echo "$json" | jq --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
     .session //= $ts |
     .current.started_at //= $ts |
     .queue //= [] |
-    .completed //= [] |
-    .config //= {}
+    .completed //= []
   ')
 
   echo "$enriched" > "$SCOPE_FILE"
-  ok "Session initialized: $name (phase: $phase)"
-  echo "$enriched" | jq '.current | {name, phase, files: (.files | length), tests: (.tests | length)}'
+  ok "Session started: $name (RED phase)"
+  info "Write failing tests, then call /devblock:next."
 }
 
 cmd_status() {
@@ -199,182 +137,79 @@ cmd_status() {
   jq '.' "$SCOPE_FILE"
 }
 
-cmd_phase() {
-  local target="${1:-}"
+cmd_next() {
   require_jq
   require_current
 
-  local current_phase
-  current_phase=$(get_phase)
+  local phase
+  phase=$(get_phase)
 
-  [[ -n "$target" ]] || die "Usage: devblock-ctl.sh phase <gather|test|run|implement|fix-tests|retest|review|done>"
-
-  case "${current_phase}::${target}" in
-    gather::test)
-      ok "Moving to test phase."
-      ;;
-    test::run)
-      ok "Moving to run phase."
-      ;;
-    run::implement)
-      info "Validating: tests must FAIL before implementing..."
-      # Validate test_command exists before capturing output
-      local test_cmd
-      test_cmd=$(get_test_command)
-      [[ "$test_cmd" != "null" && -n "$test_cmd" ]] || die "No test_command configured."
-      local test_output exit_code=0
-      test_output=$(run_tests 2>&1) || exit_code=$?
-      # Show test output so the agent can see what happened
-      printf '%s\n' "$test_output"
-      if [[ $exit_code -eq 0 ]]; then
-        die "Tests are PASSING. In run phase, tests must FAIL before moving to implement. Write failing tests first."
+  case "$phase" in
+    red)
+      info "Validating: tests must FAIL in RED phase..."
+      if run_tests; then
+        die "Tests are PASSING. Write failing tests first, then call /devblock:next."
       fi
-      # Warn on error-type failures (not assertion failures)
-      if printf '%s\n' "$test_output" | grep -qiE 'SyntaxError|ImportError|ModuleNotFoundError|TypeError.*not a function|ReferenceError'; then
-        echo "⚠️  WARNING: Tests seem to fail due to ERRORS, not assertion failures."
-        echo "   Consider fixing test code before implementing."
-      fi
-      ok "Tests correctly failing. Moving to implement phase."
+      ok "Tests correctly failing. Moving to GREEN phase."
+      jq '.current.phase = "green"' "$SCOPE_FILE" > "${SCOPE_FILE}.tmp" && mv "${SCOPE_FILE}.tmp" "$SCOPE_FILE"
+      info "GREEN phase. Make tests pass, then call /devblock:next."
       ;;
-    implement::fix-tests)
-      ok "Entering fix-tests (return to implement)."
-      ;;
-    implement::retest)
-      ok "Moving to retest phase."
-      ;;
-    retest::review)
-      info "Validating: tests must PASS before review..."
+    green)
+      info "Validating: tests must PASS in GREEN phase..."
       if ! run_tests; then
-        die "Tests are FAILING. Make tests pass before moving to review."
+        die "Tests still FAILING. Fix implementation, then call /devblock:next."
       fi
-      ok "Tests passing. Moving to review phase."
-      ;;
-    retest::fix-tests)
-      ok "Entering fix-tests (return to retest)."
-      ;;
-    fix-tests::implement)
-      local ret
-      ret=$(jq -r '.current.return_to // empty' "$SCOPE_FILE")
-      [[ "$ret" == "implement" ]] || die "Cannot return to implement — fix-tests was entered from ${ret:-unknown}."
-      ok "Returning to implement phase."
-      ;;
-    fix-tests::retest)
-      local ret
-      ret=$(jq -r '.current.return_to // empty' "$SCOPE_FILE")
-      [[ "$ret" == "retest" ]] || die "Cannot return to retest — fix-tests was entered from ${ret:-unknown}."
-      ok "Returning to retest phase."
-      ;;
-    review::done)
-      ok "Feature complete!"
-      ;;
-    review::gather)
-      info "Review KO. Back to gather."
-      ;;
-    *::gather)
-      # Auto-stash implementation work on backward transitions
-      if [[ "$current_phase" == "implement" || "$current_phase" == "fix-tests" ]]; then
-        if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
-          git stash push -m "devblock-auto: $current_phase -> $target" 2>/dev/null || true
-          info "Implementation stashed. Use 'git stash pop' to restore."
-        fi
-      fi
-      info "Back to gather (user request)."
-      ;;
-    *::test)
-      # Auto-stash implementation work on backward transitions
-      if [[ "$current_phase" == "implement" || "$current_phase" == "fix-tests" ]]; then
-        if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
-          git stash push -m "devblock-auto: $current_phase -> $target" 2>/dev/null || true
-          info "Implementation stashed. Use 'git stash pop' to restore."
-        fi
-      fi
-      info "Back to test (user request)."
-      ;;
-    *)
-      die "Invalid transition: $current_phase -> $target. Valid phases: gather, test, run, implement, fix-tests, retest, review, done."
-      ;;
-  esac
+      ok "Tests passing. Feature complete!"
 
-  if [[ "$target" == "done" ]]; then
-    # Move current to completed, clear current
-    local now
-    now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-    jq --arg ts "$now" '
-      .completed += [.current + {phase: "done", completed_at: $ts}] |
-      .current = null
-    ' "$SCOPE_FILE" > "${SCOPE_FILE}.tmp" && mv "${SCOPE_FILE}.tmp" "$SCOPE_FILE"
-    ok "Feature moved to completed."
-    info "Use /devblock:next to start the next feature."
-  elif [[ "$target" == "fix-tests" ]]; then
-    # Set return_to and phase
-    jq --arg p "$target" --arg ret "$current_phase" '
-      .current.phase = $p | .current.return_to = $ret
-    ' "$SCOPE_FILE" > "${SCOPE_FILE}.tmp" && mv "${SCOPE_FILE}.tmp" "$SCOPE_FILE"
-  else
-    # Clear return_to when leaving fix-tests, set phase
-    if [[ "$current_phase" == "fix-tests" ]]; then
-      jq --arg p "$target" '
-        .current.phase = $p | del(.current.return_to)
-      ' "$SCOPE_FILE" > "${SCOPE_FILE}.tmp" && mv "${SCOPE_FILE}.tmp" "$SCOPE_FILE"
-    else
-      jq --arg p "$target" '.current.phase = $p' "$SCOPE_FILE" > "${SCOPE_FILE}.tmp" && mv "${SCOPE_FILE}.tmp" "$SCOPE_FILE"
-    fi
-  fi
-}
+      # Auto-commit scoped files
+      local feature_name
+      feature_name=$(jq -r '.current.name' "$SCOPE_FILE")
+      auto_commit "$feature_name"
 
-cmd_next() {
-  require_jq
-  require_scope
-
-  local current
-  current=$(jq -r '.current' "$SCOPE_FILE")
-
-  # If there's a current feature that isn't done, validate tests pass
-  if [[ "$current" != "null" ]]; then
-    local phase
-    phase=$(get_phase)
-    if [[ "$phase" != "done" ]]; then
-      info "Current feature not marked done. Validating tests pass..."
-      if ! run_tests; then
-        die "Tests are FAILING on current feature. Complete it before advancing."
-      fi
-      # Auto-mark as done
+      # Move current to completed
       local now
       now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
       jq --arg ts "$now" '
         .completed += [.current + {phase: "done", completed_at: $ts}] |
         .current = null
       ' "$SCOPE_FILE" > "${SCOPE_FILE}.tmp" && mv "${SCOPE_FILE}.tmp" "$SCOPE_FILE"
-      ok "Current feature auto-completed (tests passing)."
-    fi
+
+      # Pop next from queue
+      local queue_len
+      queue_len=$(jq '.queue | length' "$SCOPE_FILE")
+      if [[ "$queue_len" -gt 0 ]]; then
+        local next_name
+        jq --arg ts "$now" '
+          .current = .queue[0] + {phase: "red", started_at: $ts} |
+          .queue = .queue[1:]
+        ' "$SCOPE_FILE" > "${SCOPE_FILE}.tmp" && mv "${SCOPE_FILE}.tmp" "$SCOPE_FILE"
+        next_name=$(jq -r '.current.name' "$SCOPE_FILE")
+        ok "RED phase for: $next_name"
+        info "Write failing tests, then call /devblock:next."
+        info "Remaining in queue: $((queue_len - 1))"
+      else
+        ok "All features completed!"
+      fi
+      ;;
+    *)
+      die "Unexpected phase '$phase'. Run: bash .devblock/devblock-ctl.sh status to check state."
+      ;;
+  esac
+}
+
+cmd_back() {
+  require_jq
+  require_current
+
+  local phase
+  phase=$(get_phase)
+
+  if [[ "$phase" != "green" ]]; then
+    die "Already in $phase phase. 'back' only works from GREEN. You are in $phase — continue working, then call /devblock:next."
   fi
 
-  # Check queue
-  local queue_len
-  queue_len=$(jq '.queue | length' "$SCOPE_FILE")
-
-  if [[ "$queue_len" -eq 0 ]]; then
-    info "🎉 Queue empty! All features completed."
-    jq '.completed | length' "$SCOPE_FILE" | xargs -I{} echo "Total completed: {}"
-    exit 0
-  fi
-
-  # Pop first from queue, set as current in gather phase
-  local now
-  now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  jq --arg ts "$now" '
-    .current = .queue[0] + {phase: "gather", started_at: $ts} |
-    .current.status = null |
-    .queue = .queue[1:]
-  ' "$SCOPE_FILE" > "${SCOPE_FILE}.tmp" && mv "${SCOPE_FILE}.tmp" "$SCOPE_FILE"
-
-  # Clean up null status field
-  jq 'if .current.status == null then del(.current.status) else . end' "$SCOPE_FILE" > "${SCOPE_FILE}.tmp" && mv "${SCOPE_FILE}.tmp" "$SCOPE_FILE"
-
-  local new_name
-  new_name=$(jq -r '.current.name' "$SCOPE_FILE")
-  ok "Started: $new_name (phase: gather)"
-  info "Remaining in queue: $((queue_len - 1))"
+  jq '.current.phase = "red"' "$SCOPE_FILE" > "${SCOPE_FILE}.tmp" && mv "${SCOPE_FILE}.tmp" "$SCOPE_FILE"
+  ok "Back to RED phase. Fix your tests, then call /devblock:next."
 }
 
 cmd_scope_add() {
@@ -383,18 +218,14 @@ cmd_scope_add() {
   require_jq
   require_current
 
-  [[ -n "$file" ]] || die "Usage: devblock-ctl.sh scope-add <file> [--test]"
+  [[ -n "$file" ]] || die "Provide a file path. Usage: bash .devblock/devblock-ctl.sh scope-add <file> [--test]"
 
-  # Check for --test flag
   if [[ "${2:-}" == "--test" ]]; then
     is_test=true
   fi
 
-  # Hardcoded: .scope.json cannot be added to scope
-  [[ "$file" != ".scope.json" ]] || die ".scope.json cannot be added to scope."
-  [[ "$file" != *"/.scope.json" ]] || die ".scope.json cannot be added to scope."
+  [[ "$file" != ".scope.json" && "$file" != *"/.scope.json" ]] || die "Do not add .scope.json to scope. Choose your implementation or test files instead."
 
-  # Check for duplicates
   local target_array
   if $is_test; then
     target_array="tests"
@@ -407,9 +238,8 @@ cmd_scope_add() {
     .current[$arr] | map(select(. == $f)) | length
   ' "$SCOPE_FILE")
 
-  [[ "$already_exists" -eq 0 ]] || die "$file is already in scope ($target_array)."
+  [[ "$already_exists" -eq 0 ]] || die "$file is already in scope ($target_array). No action needed — proceed with your current task."
 
-  # Add to scope
   jq --arg f "$file" --arg arr "$target_array" '
     .current[$arr] += [$f]
   ' "$SCOPE_FILE" > "${SCOPE_FILE}.tmp" && mv "${SCOPE_FILE}.tmp" "$SCOPE_FILE"
@@ -417,16 +247,15 @@ cmd_scope_add() {
   ok "Added $file to $target_array scope."
 }
 
-cmd_unfocus() {
+cmd_stop() {
   local full="${1:-}"
   require_jq
 
   if [[ ! -f "$SCOPE_FILE" ]]; then
-    echo '{"ok":false,"error":"No active DevBlock session (.scope.json not found)"}'
+    echo '{"ok":false,"error":"No active session."}'
     exit 1
   fi
 
-  # Read state before deleting
   local current_name phase queue_len
   current_name=$(jq -r '.current.name // "none"' "$SCOPE_FILE" 2>/dev/null)
   phase=$(jq -r '.current.phase // "none"' "$SCOPE_FILE" 2>/dev/null)
@@ -438,17 +267,13 @@ cmd_unfocus() {
 
   if [[ "$full" == "--full" ]]; then
     rm -rf .devblock
-    # Remove .devblock/ and .scope.json from .gitignore if present
     if [[ -f .gitignore ]]; then
-      # Compatible with both GNU sed and macOS BSD sed
-      sed -i.bak '/^\.devblock\/$/d' .gitignore && rm -f .gitignore.bak
-      sed -i.bak '/^\.scope\.json$/d' .gitignore && rm -f .gitignore.bak
+      sed -i '/^\.devblock\/$/d' .gitignore
+      sed -i '/^\.scope\.json$/d' .gitignore
     fi
     msg="$msg Uninstalled .devblock/ directory."
   fi
 
-  # Escape for safe JSON output
-  msg=$(printf '%s' "$msg" | sed 's/\\/\\\\/g; s/"/\\"/g')
   echo "{\"ok\":true,\"message\":\"$msg\"}"
 }
 
@@ -459,14 +284,14 @@ main() {
   shift || true
 
   case "$cmd" in
-    install) cmd_install ;;
-    init)    cmd_init "$*" ;;
-    status)  cmd_status ;;
-    phase)   cmd_phase "$@" ;;
-    next)    cmd_next ;;
+    install)   cmd_install ;;
+    init)      cmd_init "$*" ;;
+    status)    cmd_status ;;
+    next)      cmd_next ;;
+    back)      cmd_back ;;
     scope-add) cmd_scope_add "$@" ;;
-    unfocus)   cmd_unfocus "$@" ;;
-    *)       die "Unknown command: $cmd. Available: install, init, status, phase, next, scope-add, unfocus" ;;
+    stop)      cmd_stop "$@" ;;
+    *)         die "Unknown command '$cmd'. Use one of: install, init, status, next, back, scope-add, stop." ;;
   esac
 }
 
