@@ -31,7 +31,9 @@ get_phase() {
 }
 
 get_test_command() {
-  jq -r '.current.test_command' "$SCOPE_FILE"
+  local cmd
+  cmd=$(jq -r '.test_command // .current.test_command // empty' "$SCOPE_FILE")
+  echo "$cmd"
 }
 
 run_tests() {
@@ -149,7 +151,9 @@ cmd_init() {
     .session //= $ts |
     .current.started_at //= $ts |
     .queue //= [] |
-    .completed //= []
+    .completed //= [] |
+    .test_command = .current.test_command |
+    .current |= del(.test_command)
   ')
 
   echo "$enriched" > "$SCOPE_FILE"
