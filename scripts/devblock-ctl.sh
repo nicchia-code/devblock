@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # devblock-ctl.sh — Single writer of .scope.json
-# Commands: install, init, status, next, back, scope-add, stop
+# Commands: install, init, status, next, back, scope-add, skip, stop
 set -euo pipefail
 
 SCOPE_FILE=".scope.json"
@@ -247,6 +247,32 @@ cmd_scope_add() {
   ok "Added $file to $target_array scope."
 }
 
+cmd_skip() {
+  require_jq
+  local reason=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --reason) reason="$2"; shift 2 ;;
+      *) die "Unknown flag: $1" ;;
+    esac
+  done
+  [[ -z "$reason" ]] && die "Usage: devblock-ctl.sh skip --reason \"...\""
+  [[ ! -f "$SCOPE_FILE" ]] && die "No active session."
+
+  # Write single-use skip token
+  echo "{\"reason\":$(printf '%s' "$reason" | jq -Rs .),\"created_at\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}" > .devblock/.skip-token
+
+  # Append to skip log
+  local phase
+  phase=$(jq -r '.current.phase // "none"' "$SCOPE_FILE")
+  local feature
+  feature=$(jq -r '.current.name // "none"' "$SCOPE_FILE")
+  echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) | phase=$phase | feature=$feature | reason: $reason" >> .devblock/skips.log
+
+  echo "Skip token created. You may now make ONE edit outside the current phase."
+  echo "Reason logged: $reason"
+}
+
 cmd_stop() {
   local full="${1:-}"
   require_jq
@@ -290,8 +316,9 @@ main() {
     next)      cmd_next ;;
     back)      cmd_back ;;
     scope-add) cmd_scope_add "$@" ;;
+    skip)      cmd_skip "$@" ;;
     stop)      cmd_stop "$@" ;;
-    *)         die "Unknown command '$cmd'. Use one of: install, init, status, next, back, scope-add, stop." ;;
+    *)         die "Unknown command '$cmd'. Use one of: install, init, status, next, back, scope-add, skip, stop." ;;
   esac
 }
 

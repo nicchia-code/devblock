@@ -1,6 +1,6 @@
 # DevBlock — TDD Enforcement
 
-Hooks enforce RED/GREEN TDD. You cannot bypass them.
+Hooks enforce RED/GREEN TDD. Phase violations are blocked but can be bypassed with `/devblock:skip`.
 
 ## Rules (when .scope.json exists)
 
@@ -9,6 +9,8 @@ Hooks enforce RED/GREEN TDD. You cannot bypass them.
 3. Files must be in scope. Use `/devblock:add <file>` to expand.
 4. Never edit `.scope.json` directly.
 5. File-modifying Bash is blocked. Use Edit/Write tools. Test runners are whitelisted.
+6. To bypass phase restrictions: `/devblock:skip --reason "..."` (requires user approval, single-use).
+7. Never use /devblock:skip without genuine need. Prefer staying in phase.
 
 ## Workflow
 

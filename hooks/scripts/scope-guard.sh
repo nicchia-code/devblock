@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scope-guard.sh — PreToolUse hook for DevBlock v3
+# scope-guard.sh — PreToolUse hook for DevBlock v4
 # Enforces scope locking and RED/GREEN phase constraints.
 set -o pipefail
 
@@ -69,14 +69,20 @@ if [[ "$TOOL_NAME" == "Edit" || "$TOOL_NAME" == "Write" || "$TOOL_NAME" == "Mult
     deny "BLOCKED: '$FILE_PATH' not in scope. Files: $SCOPE_LIST. Call /devblock:add $FILE_PATH."
   fi
 
+  # --- Skip token: single-use phase bypass ---
+  if [[ -f .devblock/.skip-token ]]; then
+    rm -f .devblock/.skip-token
+    allow
+  fi
+
   # RED phase: only test files editable
   if [[ "$IN_FILES" -gt 0 && "$IN_TESTS" -eq 0 && "$PHASE" == "red" ]]; then
-    deny "BLOCKED: RED phase — only test files editable. Write failing tests, then /devblock:next."
+    deny "BLOCKED: RED phase — only test files editable. Write failing tests, then /devblock:next. If you must bypass, use /devblock:skip."
   fi
 
   # GREEN phase: only impl files editable
   if [[ "$IN_TESTS" -gt 0 && "$PHASE" == "green" ]]; then
-    deny "BLOCKED: GREEN phase — only impl files editable. Make tests pass, then /devblock:next. If tests are wrong, run: bash .devblock/devblock-ctl.sh back"
+    deny "BLOCKED: GREEN phase — only impl files editable. Make tests pass, then /devblock:next. If tests are wrong, run: bash .devblock/devblock-ctl.sh back. If you must bypass, use /devblock:skip."
   fi
 
   allow

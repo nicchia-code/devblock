@@ -41,3 +41,5 @@ user_invocable: true
    ```
 
 4. Confirm session started. Begin writing failing tests immediately.
+
+> **Note:** If you need to edit outside the current phase, use `/devblock:skip` — it requires a reason and user approval.
