@@ -44,6 +44,35 @@ run_tests() {
   return $exit_code
 }
 
+complete_feature() {
+  local feature_name
+  feature_name=$(jq -r '.current.name' "$SCOPE_FILE")
+  auto_commit "$feature_name"
+
+  local now
+  now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  jq --arg ts "$now" '
+    .completed += [.current + {phase: "done", completed_at: $ts}] |
+    .current = null
+  ' "$SCOPE_FILE" > "${SCOPE_FILE}.tmp" && mv "${SCOPE_FILE}.tmp" "$SCOPE_FILE"
+
+  local queue_len
+  queue_len=$(jq '.queue | length' "$SCOPE_FILE")
+  if [[ "$queue_len" -gt 0 ]]; then
+    jq --arg ts "$now" '
+      .current = .queue[0] + {phase: "red", started_at: $ts} |
+      .queue = .queue[1:]
+    ' "$SCOPE_FILE" > "${SCOPE_FILE}.tmp" && mv "${SCOPE_FILE}.tmp" "$SCOPE_FILE"
+    local next_name
+    next_name=$(jq -r '.current.name' "$SCOPE_FILE")
+    ok "RED phase for: $next_name"
+    info "Write failing tests, then call /devblock:next."
+    info "Remaining in queue: $((queue_len - 1))"
+  else
+    ok "All features completed!"
+  fi
+}
+
 auto_commit() {
   local feature_name="$1"
   # Stage only scoped files (impl + tests)
@@ -148,7 +177,9 @@ cmd_next() {
     red)
       info "Validating: tests must FAIL in RED phase..."
       if run_tests; then
-        die "Tests are PASSING. Write failing tests first, then call /devblock:next."
+        info "Tests already passing — fast-forwarding through GREEN."
+        complete_feature
+        return 0
       fi
       ok "Tests correctly failing. Moving to GREEN phase."
       jq '.current.phase = "green"' "$SCOPE_FILE" > "${SCOPE_FILE}.tmp" && mv "${SCOPE_FILE}.tmp" "$SCOPE_FILE"
@@ -160,36 +191,7 @@ cmd_next() {
         die "Tests still FAILING. Fix implementation, then call /devblock:next."
       fi
       ok "Tests passing. Feature complete!"
-
-      # Auto-commit scoped files
-      local feature_name
-      feature_name=$(jq -r '.current.name' "$SCOPE_FILE")
-      auto_commit "$feature_name"
-
-      # Move current to completed
-      local now
-      now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-      jq --arg ts "$now" '
-        .completed += [.current + {phase: "done", completed_at: $ts}] |
-        .current = null
-      ' "$SCOPE_FILE" > "${SCOPE_FILE}.tmp" && mv "${SCOPE_FILE}.tmp" "$SCOPE_FILE"
-
-      # Pop next from queue
-      local queue_len
-      queue_len=$(jq '.queue | length' "$SCOPE_FILE")
-      if [[ "$queue_len" -gt 0 ]]; then
-        local next_name
-        jq --arg ts "$now" '
-          .current = .queue[0] + {phase: "red", started_at: $ts} |
-          .queue = .queue[1:]
-        ' "$SCOPE_FILE" > "${SCOPE_FILE}.tmp" && mv "${SCOPE_FILE}.tmp" "$SCOPE_FILE"
-        next_name=$(jq -r '.current.name' "$SCOPE_FILE")
-        ok "RED phase for: $next_name"
-        info "Write failing tests, then call /devblock:next."
-        info "Remaining in queue: $((queue_len - 1))"
-      else
-        ok "All features completed!"
-      fi
+      complete_feature
       ;;
     *)
       die "Unexpected phase '$phase'. Run: bash .devblock/devblock-ctl.sh status to check state."
