@@ -24,10 +24,19 @@ interface CompletedFeature extends ScopeFeature {
 
 interface ScopeJSON {
   session?: string
+  agent?: string
   current: ScopeFeature | null
   test_command: string
   queue: QueuedFeature[]
   completed: CompletedFeature[]
+}
+
+// ─── Constants ──────────────────────────────────────────────────────────────
+
+const TDD_AGENTS = ["tdd", "tdd-auto"]
+
+function isTddAgent(agentName: string | undefined): boolean {
+  return !!agentName && TDD_AGENTS.includes(agentName)
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -216,6 +225,34 @@ export const DevBlockPlugin: Plugin = async ({ project, client, $, directory, wo
   const dir = worktree || directory
   const isWindows = process.platform === "win32"
 
+  // ── Agent Tracking ──────────────────────────────────────────────────────
+  // Track the current agent from message.updated events.
+  // DevBlock hooks only enforce TDD when the active agent is 'tdd' or 'tdd-auto'.
+
+  let currentAgent = ""
+  let hasWarnedNonTddAgent = false
+
+  ;(async () => {
+    try {
+      const events = await client.event.subscribe()
+      for await (const event of events.stream) {
+        if (event.type === "message.updated") {
+          const msg = (event as any).properties?.info
+          if (msg?.role === "user" && typeof msg.agent === "string") {
+            const prevAgent = currentAgent
+            currentAgent = msg.agent
+            // Reset warning flag when switching agents
+            if (prevAgent !== currentAgent) {
+              hasWarnedNonTddAgent = false
+            }
+          }
+        }
+      }
+    } catch {
+      /* Event stream not available (headless/API mode) — ignore */
+    }
+  })()
+
   async function toast(
     message: string,
     variant: "info" | "success" | "warning" | "error" = "info",
@@ -305,6 +342,24 @@ export const DevBlockPlugin: Plugin = async ({ project, client, $, directory, wo
     "tool.execute.before": async (input, output) => {
       const scope = readScope(dir)
       if (!scope) return
+
+      // ── Agent guard ─────────────────────────────────────────────────────
+      // Determine effective agent: prefer live tracking (currentAgent), fall back to scope.agent
+      const effectiveAgent = currentAgent || scope.agent || ""
+
+      if (!isTddAgent(effectiveAgent)) {
+        // Non-TDD agent: warn once if there's an active session, but never block
+        if (scope.current && !hasWarnedNonTddAgent) {
+          hasWarnedNonTddAgent = true
+          toast(
+            `TDD session active ("${scope.current.name}"). Switch to tdd or tdd-auto agent to enforce RED/GREEN.`,
+            "warning",
+            "DevBlock",
+            5000
+          ).catch(() => {})
+        }
+        return // pass through — no enforcement
+      }
 
       const toolName = input.tool
 
@@ -419,6 +474,10 @@ export const DevBlockPlugin: Plugin = async ({ project, client, $, directory, wo
       const scope = readScope(dir)
       if (!scope?.current) return
 
+      // Only inject TDD state into compaction if the active agent is a TDD agent
+      const effectiveAgent = currentAgent || scope.agent || ""
+      if (!isTddAgent(effectiveAgent)) return
+
       const { name, phase, files, tests } = scope.current
       output.context.push(
         `DEVBLOCK TDD STATE (preserve this):\n` +
@@ -448,6 +507,10 @@ export const DevBlockPlugin: Plugin = async ({ project, client, $, directory, wo
           test_command: tool.schema.string().optional().describe(
             "Command to run tests. If omitted, auto-detected from project config."
           ),
+          agent: tool.schema.string().optional().describe(
+            "Agent that initiated this session (auto-set from context). " +
+            "DevBlock hooks only enforce TDD when agent is 'tdd' or 'tdd-auto'."
+          ),
         },
         async execute(args, context) {
           const d = context.worktree || context.directory
@@ -476,8 +539,10 @@ export const DevBlockPlugin: Plugin = async ({ project, client, $, directory, wo
           ensureDevblockDir(d)
 
           const ts = now()
+          const callingAgent = args.agent || currentAgent || "unknown"
           const data: ScopeJSON = {
             session: ts,
+            agent: callingAgent,
             current: {
               name: args.name,
               phase: "red",
