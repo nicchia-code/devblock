@@ -226,32 +226,11 @@ export const DevBlockPlugin: Plugin = async ({ project, client, $, directory, wo
   const isWindows = process.platform === "win32"
 
   // ── Agent Tracking ──────────────────────────────────────────────────────
-  // Track the current agent from message.updated events.
+  // Track the current agent via chat.message hook (fires before LLM tool calls).
   // DevBlock hooks only enforce TDD when the active agent is 'tdd' or 'tdd-auto'.
+  // Non-TDD agents get silent pass-through — DevBlock is invisible to them.
 
-  let currentAgent = ""
-  let hasWarnedNonTddAgent = false
-
-  ;(async () => {
-    try {
-      const events = await client.event.subscribe()
-      for await (const event of events.stream) {
-        if (event.type === "message.updated") {
-          const msg = (event as any).properties?.info
-          if (msg?.role === "user" && typeof msg.agent === "string") {
-            const prevAgent = currentAgent
-            currentAgent = msg.agent
-            // Reset warning flag when switching agents
-            if (prevAgent !== currentAgent) {
-              hasWarnedNonTddAgent = false
-            }
-          }
-        }
-      }
-    } catch {
-      /* Event stream not available (headless/API mode) — ignore */
-    }
-  })()
+  const sessionAgentMap = new Map<string, string>()
 
   async function toast(
     message: string,
@@ -329,39 +308,75 @@ export const DevBlockPlugin: Plugin = async ({ project, client, $, directory, wo
         tests: next.tests,
         started_at: ts,
       }
+      writeScope(d, scope)
     } else {
+      // All features completed — archive and remove .scope.json
       scope.current = null
+      try {
+        const dbDir = devblockDir(d)
+        if (!existsSync(dbDir)) mkdirSync(dbDir, { recursive: true })
+        writeFileSync(
+          join(dbDir, "scope.completed.json"),
+          JSON.stringify(normalizeScope(scope), null, 2) + "\n"
+        )
+      } catch { /* archiving is best-effort */ }
+      try { unlinkSync(scopePath(d)) } catch { /* ok */ }
     }
-
-    writeScope(d, scope)
   }
 
   return {
+    // ── Chat Message Hook ─────────────────────────────────────────────────
+    // Fires when a user message is received — BEFORE the LLM responds and calls tools.
+    // This is the most reliable way to know which agent is active.
+
+    "chat.message": async (input: any, _output: any) => {
+      const agent = input.agent
+      const sessionID = input.sessionID
+
+      if (typeof agent === "string" && agent) {
+        sessionAgentMap.set(sessionID, agent)
+      }
+    },
+
     // ── Scope Guard ───────────────────────────────────────────────────────
 
     "tool.execute.before": async (input, output) => {
+      const toolName = input.tool
+      const agent = sessionAgentMap.get(input.sessionID)
+
+      // ── Agent gate ────────────────────────────────────────────────────
+      // Non-TDD agents (or unknown agent): silent pass-through. DevBlock is invisible.
+      if (!isTddAgent(agent)) return
+
+      // ── From here: agent IS tdd or tdd-auto ───────────────────────────
+
       const scope = readScope(dir)
-      if (!scope) return
 
-      // ── Agent guard ─────────────────────────────────────────────────────
-      // Determine effective agent: prefer live tracking (currentAgent), fall back to scope.agent
-      const effectiveAgent = currentAgent || scope.agent || ""
+      // ── No .scope.json: block everything except devblock_init ─────────
+      if (!scope) {
+        // Allow devblock tools (init, status) and read-only tools
+        if (toolName === "devblock_init" || toolName === "devblock_status") return
+        if (toolName === "read" || toolName === "glob" || toolName === "grep" || toolName === "task") return
 
-      if (!isTddAgent(effectiveAgent)) {
-        // Non-TDD agent: warn once if there's an active session, but never block
-        if (scope.current && !hasWarnedNonTddAgent) {
-          hasWarnedNonTddAgent = true
-          toast(
-            `TDD session active ("${scope.current.name}"). Switch to tdd or tdd-auto agent to enforce RED/GREEN.`,
-            "warning",
-            "DevBlock",
-            5000
-          ).catch(() => {})
-        }
-        return // pass through — no enforcement
+        throw new Error(
+          "DEVBLOCK DENIED: You are on a TDD agent but no session is active.\n" +
+          "Call devblock_init to start a TDD session before making any changes."
+        )
       }
 
-      const toolName = input.tool
+      // ── .scope.json exists but no active feature (all completed) ──────
+      if (!scope.current) {
+        // Allow devblock tools and read-only tools
+        if (toolName === "devblock_init" || toolName === "devblock_stop" || toolName === "devblock_status") return
+        if (toolName === "read" || toolName === "glob" || toolName === "grep" || toolName === "task") return
+
+        throw new Error(
+          "DEVBLOCK DENIED: All features are completed. No active feature.\n" +
+          "Call devblock_init for a new feature, or /devblock:stop to close the session."
+        )
+      }
+
+      // ── Active feature: enforce RED/GREEN ─────────────────────────────
 
       // --- Edit / Write ---
       if (toolName === "edit" || toolName === "write" || toolName === "patch" || toolName === "multiedit") {
@@ -379,13 +394,6 @@ export const DevBlockPlugin: Plugin = async ({ project, client, $, directory, wo
         }
 
         if (isAbsolute(filePath)) return
-
-        if (!scope.current) {
-          throw new Error(
-            "DEVBLOCK DENIED: No active feature.\n" +
-            "Start a TDD session first with devblock_init."
-          )
-        }
 
         const { files, tests, phase, name } = scope.current
         const inFiles = files.includes(normalizeScopeFilePath(filePath))
@@ -439,8 +447,6 @@ export const DevBlockPlugin: Plugin = async ({ project, client, $, directory, wo
 
       // --- Bash ---
       if (toolName === "bash") {
-        if (!scope.current) return
-
         const command = output.args.command || ""
 
         if (/devblock_/.test(command)) return
@@ -475,8 +481,8 @@ export const DevBlockPlugin: Plugin = async ({ project, client, $, directory, wo
       if (!scope?.current) return
 
       // Only inject TDD state into compaction if the active agent is a TDD agent
-      const effectiveAgent = currentAgent || scope.agent || ""
-      if (!isTddAgent(effectiveAgent)) return
+      const agent = sessionAgentMap.get((input as any).sessionID)
+      if (!isTddAgent(agent)) return
 
       const { name, phase, files, tests } = scope.current
       output.context.push(
@@ -539,7 +545,10 @@ export const DevBlockPlugin: Plugin = async ({ project, client, $, directory, wo
           ensureDevblockDir(d)
 
           const ts = now()
-          const callingAgent = args.agent || currentAgent || "unknown"
+          const contextAgent = (context as any).agent
+          const mapAgent = sessionAgentMap.get((context as any).sessionID)
+          const callingAgent = args.agent || contextAgent || mapAgent || "unknown"
+
           const data: ScopeJSON = {
             session: ts,
             agent: callingAgent,
