@@ -9,7 +9,7 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-$DevBlockVersion = '5.0.0'
+$DevBlockVersion = '5.1.0'
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -136,9 +136,7 @@ function Show-Status {
     }
   }
   if (Test-AgentsMdHasDevBlock) {
-    Write-Host "  " -NoNewline; Write-Host "+" -ForegroundColor Green -NoNewline; Write-Host " AGENTS.md (DevBlock section)"
-  } else {
-    Write-Host "  " -NoNewline; Write-Host "!" -ForegroundColor Red -NoNewline; Write-Host " AGENTS.md (no DevBlock section)"
+    Write-Host "  " -NoNewline; Write-Host "!" -ForegroundColor Yellow -NoNewline; Write-Host " AGENTS.md (legacy DevBlock section — will be cleaned on next install)"
   }
 
   Write-Host ''
@@ -188,7 +186,7 @@ function Start-Uninstall {
 
 function Start-Install {
   # Validate source tree
-  foreach ($check in @('plugins/devblock.ts', 'agents', 'skills', 'commands', 'AGENTS.md')) {
+  foreach ($check in @('plugins/devblock.ts', 'agents', 'skills', 'commands')) {
     if (-not (Test-Path (Join-Path $ScriptDir $check))) {
       Write-Err "Cannot find $check — run from the DevBlock source directory"
     }
@@ -239,10 +237,16 @@ function Start-Install {
     Write-Ok $_.Name
   }
 
-  # ── 5. AGENTS.md ───────────────────────────────────────────────────────────
+  # ── 5. Cleanup legacy AGENTS.md ─────────────────────────────────────────────
+  # TDD rules are now embedded in agent files (tdd.md, tdd-auto.md).
+  # Remove old DevBlock section from global AGENTS.md if present (upgrade path).
 
-  Write-Step '5/5' 'Global rules (AGENTS.md)'
-  Install-AgentsMdSection
+  Write-Step '5/5' 'Cleanup legacy AGENTS.md'
+  if (Test-AgentsMdHasDevBlock) {
+    Remove-AgentsMdSection
+  } else {
+    Write-Ok 'No legacy DevBlock section to clean up'
+  }
 
   # Post-install verification
   $okCount = 0; $missCount = 0
@@ -261,16 +265,15 @@ function Start-Install {
   Write-Host "DevBlock v$DevBlockVersion installed successfully!" -ForegroundColor Green
   Write-Host ''
   Write-Host '  Plugin:   1'
-  Write-Host '  Agents:   2 (TDD, TDD-Auto)'
+  Write-Host '  Agents:   2 (TDD, TDD-Auto) — includes enforcement rules'
   Write-Host '  Skills:   5'
   Write-Host '  Commands: 1 (/tdd-status)'
-  Write-Host '  Rules:    AGENTS.md'
   Write-Host "  Verified: $okCount/$($okCount + $missCount) files OK"
   Write-Host ''
   Write-Host 'How to use:'
   Write-Host '  1. Open any project with OpenCode'
   Write-Host '  2. Press Tab to switch to the TDD or TDD-Auto agent'
-  Write-Host '  3. The plugin enforces RED/GREEN phases automatically'
+  Write-Host '  3. The plugin enforces RED/GREEN phases only when a TDD agent is active'
   Write-Host ''
   Write-Host 'Other commands:'
   Write-Host "  pwsh install.ps1 -Status      Show what is installed"

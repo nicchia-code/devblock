@@ -3,7 +3,7 @@
 # Usage: sh install.sh [--uninstall | --status | --help]
 set -eu
 
-DEVBLOCK_VERSION="5.0.0"
+DEVBLOCK_VERSION="5.1.0"
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -138,9 +138,7 @@ show_status() {
     fi
   done
   if agents_md_has_devblock; then
-    printf "  ${GREEN}+${RESET} AGENTS.md (DevBlock section)\n"
-  else
-    printf "  ${RED}!${RESET} AGENTS.md (no DevBlock section)\n"
+    printf "  ${YELLOW}!${RESET} AGENTS.md (legacy DevBlock section — will be cleaned on next install)\n"
   fi
 
   printf "\n"
@@ -186,7 +184,6 @@ do_install() {
   [ -d "$SCRIPT_DIR/agents" ]              || die "Cannot find agents/ directory"
   [ -d "$SCRIPT_DIR/skills" ]              || die "Cannot find skills/ directory"
   [ -d "$SCRIPT_DIR/commands" ]            || die "Cannot find commands/ directory"
-  [ -f "$SCRIPT_DIR/AGENTS.md" ]           || die "Cannot find AGENTS.md"
 
   # Check destination is writable
   mkdir -p "$DEST" 2>/dev/null || die "Cannot create $DEST — check permissions"
@@ -235,10 +232,16 @@ do_install() {
     ok "$_name"
   done
 
-  # ── 5. AGENTS.md ───────────────────────────────────────────────────────────
+  # ── 5. Cleanup legacy AGENTS.md ─────────────────────────────────────────────
+  # TDD rules are now embedded in agent files (tdd.md, tdd-auto.md).
+  # Remove old DevBlock section from global AGENTS.md if present (upgrade path).
 
-  step "5/5" "Global rules (AGENTS.md)"
-  agents_md_inject
+  step "5/5" "Cleanup legacy AGENTS.md"
+  if agents_md_has_devblock; then
+    agents_md_remove
+  else
+    ok "No legacy DevBlock section to clean up"
+  fi
 
   _install_started=false
 
@@ -258,16 +261,15 @@ do_install() {
   printf "\n${GREEN}${BOLD}DevBlock v%s installed successfully!${RESET}\n" "$DEVBLOCK_VERSION"
   printf "\n"
   printf "  Plugin:   1\n"
-  printf "  Agents:   2 (TDD, TDD-Auto)\n"
+  printf "  Agents:   2 (TDD, TDD-Auto) — includes enforcement rules\n"
   printf "  Skills:   5\n"
   printf "  Commands: 1 (/tdd-status)\n"
-  printf "  Rules:    AGENTS.md\n"
   printf "  Verified: %d/%d files OK\n" "$_ok" "$((_ok + _miss))"
   printf "\n"
   printf "How to use:\n"
   printf "  1. Open any project with OpenCode\n"
   printf "  2. Press ${BOLD}Tab${RESET} to switch to the ${BOLD}TDD${RESET} or ${BOLD}TDD-Auto${RESET} agent\n"
-  printf "  3. The plugin enforces RED/GREEN phases automatically\n"
+  printf "  3. The plugin enforces RED/GREEN phases only when a TDD agent is active\n"
   printf "\n"
   printf "Other commands:\n"
   printf "  sh %s --status      Show what is installed\n" "$0"
